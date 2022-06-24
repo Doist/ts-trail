@@ -1,0 +1,12 @@
+[Unit]
+Description=Tailscale SSH session recordings upload service
+After=network.target
+
+[Service]
+ExecStart={{.Binary}} -bucket={{.Bucket}}{{if .Prefix}} -prefix={{.Prefix}}{{end}}
+Environment="AWS_REGION={{.Region}}"
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
