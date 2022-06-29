@@ -97,6 +97,14 @@ func run(ctx context.Context, args runArgs) error {
 				}
 				return err
 			}
+			// BUG: the logic here assumes that same session lines are logged one after another.
+			// This may not be the case in practice, as two sessions started close anough may get
+			// their log lines interleaved, resulting in race. The side effect of such a race
+			// would be incomplete metadata text, because as different session lines interleave
+			// each other, we'd flip sid variable between multiple values and reset bld.
+			// One possible fix can be to keep track of a fixed number of log lines related to
+			// any session, and reconstructing metadata from them only when we encounter the final
+			// line which trigger the file tracking logic.
 			if s := lineSessionID(rec.Msg); s == "" {
 				continue
 			} else if sid != s {
