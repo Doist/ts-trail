@@ -86,8 +86,8 @@ func run(ctx context.Context, args runArgs) error {
 	group.Go(func() error { return uploadRecordings(ctx, s3client, args.bucket, screenRecordings) })
 	group.Go(func() error {
 		defer close(screenRecordings)
-		var sid string              // current ssh session ID
-		bld := new(strings.Builder) // free-form session metadata extracted from relevant log entries
+		prevLines := &recBuffer{}
+		bld := new(strings.Builder)
 		dec := json.NewDecoder(stdout)
 		for {
 			var rec logRecord
@@ -97,27 +97,27 @@ func run(ctx context.Context, args runArgs) error {
 				}
 				return err
 			}
-			// BUG: the logic here assumes that same session lines are logged one after another.
-			// This may not be the case in practice, as two sessions started close anough may get
-			// their log lines interleaved, resulting in race. The side effect of such a race
-			// would be incomplete metadata text, because as different session lines interleave
-			// each other, we'd flip sid variable between multiple values and reset bld.
-			// One possible fix can be to keep track of a fixed number of log lines related to
-			// any session, and reconstructing metadata from them only when we encounter the final
-			// line which trigger the file tracking logic.
 			if s := lineSessionID(rec.Msg); s == "" {
 				continue
-			} else if sid != s {
-				sid = s
-				bld.Reset()
-				fmt.Fprintf(bld, "session %s at %s\n", sid, rec.Hostname)
+			} else {
+				rec.sid = s
 			}
-			_, text, ok := strings.Cut(rec.Msg, "): ")
-			if !ok {
+			if !strings.Contains(rec.Msg, recordingPrefix) {
+				prevLines.add(rec)
 				continue
 			}
-			bld.WriteString(text)
-			bld.WriteByte('\n')
+			bld.Reset()
+			fmt.Fprintf(bld, "session %s at %s\n", rec.sid, rec.Hostname)
+			var text string // message text without prefix
+			for _, r := range append(prevLines.sidRecords(rec.sid), rec) {
+				var ok bool
+				_, text, ok = strings.Cut(r.Msg, "): ")
+				if !ok {
+					continue
+				}
+				bld.WriteString(text)
+				bld.WriteByte('\n')
+			}
 			if !strings.HasPrefix(text, recordingPrefix) || !strings.HasSuffix(text, ".cast") {
 				continue
 			}
@@ -134,7 +134,7 @@ func run(ctx context.Context, args runArgs) error {
 				// not exiting here to let decoder drain stdout
 			case screenRecordings <- &recordingTrackRecord{
 				pid:         rec.Pid,
-				sid:         sid,
+				sid:         rec.sid,
 				fileName:    fileName,
 				prefix:      prefix,
 				description: bld.String(),
@@ -364,6 +364,40 @@ type logRecord struct {
 	Pid      int    `json:"_PID,string"`
 	Msg      string `json:"MESSAGE"`
 	Hostname string `json:"_HOSTNAME"`
+	sid      string // session id extracted from Msg
+}
+
+type recBuffer struct {
+	a [10]logRecord
+	i int
+}
+
+func (r *recBuffer) add(rec logRecord) {
+	r.a[r.i] = rec
+	r.i = (r.i + 1) % len(r.a)
+}
+
+func (r *recBuffer) sidRecords(sid string) []logRecord {
+	if sid == "" {
+		return nil
+	}
+	var out []logRecord
+	// both loops' bodies must be the same
+	for i := r.i; i < len(r.a); i++ {
+		if r.a[i].Pid == 0 || r.a[i].sid != sid {
+			continue
+		}
+		out = append(out, r.a[i])
+		r.a[i] = logRecord{}
+	}
+	for i := 0; i < r.i; i++ {
+		if r.a[i].Pid == 0 || r.a[i].sid != sid {
+			continue
+		}
+		out = append(out, r.a[i])
+		r.a[i] = logRecord{}
+	}
+	return out
 }
 
 func lineSessionID(line string) string {
