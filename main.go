@@ -476,7 +476,18 @@ func installService(args runArgs, s3client *s3.Client) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	log.Println(cmd)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if b, err := os.ReadFile("/etc/default/tailscaled"); err == nil &&
+		!bytes.HasPrefix(b, []byte("TS_DEBUG_LOG_SSH=1")) &&
+		!bytes.Contains(b, []byte("\nTS_DEBUG_LOG_SSH=1")) {
+		log.Print("Don't forget to enable SSH session logs:" +
+			"\n1. add “TS_DEBUG_LOG_SSH=1” to /etc/default/tailscaled" +
+			"\n2. restart tailscaled service: systemctl restart tailscaled" +
+			"\nSee https://tailscale.com/kb/1011/log-mesh-traffic/#ssh-session-logs for details")
+	}
+	return nil
 }
 
 //go:embed service.template
